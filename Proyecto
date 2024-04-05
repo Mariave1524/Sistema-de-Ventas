@@ -1,0 +1,145 @@
+'Server.js'
+
+const express = require('express');
+const mongoose = require('mongoose');
+const dotenv = require('dotenv');
+const authRoutes = require('./routes/auth');
+const authMiddleware = require('./middleware/authMiddleware');
+
+  dotenv.config();
+
+const app = express();
+const port = process.env.PORT || 3000;
+
+mongoose.connect(process.env.MONGO_URI, {
+  useNewUrlParser: true,
+  useUnifiedTopology: true,
+})
+.then(() => console.log('Conexión a MongoDB establecida'))
+.catch(err => console.error('Error al conectar a MongoDB:', err));
+
+app.use(express.json());
+
+app.use('/api/auth', authRoutes);
+
+app.get('/api/inventario', authMiddleware, (req, res) => {
+  // Aquí iría la lógica para obtener el inventario
+  res.json({ message: 'Datos del inventario' });
+});
+
+app.listen(port, () => {
+  console.log ('Servidor en ejecución en http://localhost:${port}');
+}); 
+
+const mongoose = require('mongoose');
+const bcrypt = require('bcryptjs');
+
+const userSchema = new mongoose.Schema({
+  username: { type: String, required: true, unique: true },
+  password: { type: String, required: true },
+});
+
+userSchema.pre('save', async function(next) {
+  if (!this.isModified('password')) return next();
+
+  const hashedPassword = await bcrypt.hash(this.password, 10);
+  this.password = hashedPassword;
+  next();
+});
+
+userSchema.methods.comparePassword = async function(candidatePassword) {
+  return await bcrypt.compare(candidatePassword, this.password);
+};
+
+module.exports = mongoose.model('User', userSchema);
+
+routes/auth.js
+
+const express = require('express');
+const { check, validationResult } = require('express-validator');
+const jwt = require('jsonwebtoken');
+const User = require('../models/User');
+const authMiddleware = require('../middleware/authMiddleware');
+
+const router = express.Router();
+
+router.post('/signup', [
+  check('username', 'El nombre de usuario es obligatorio').notEmpty(),
+  check('password', 'La contraseña debe tener al menos 6 caracteres').isLength({ min: 6 }),
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ errors: errors.array() });
+  }
+
+  const { username, password } = req.body;
+
+  try {
+    let user = await User.findOne({ username });
+    if (user) {
+      return res.status(400).json({ message: 'El nombre de usuario ya está en uso' });
+    }
+
+    user = new User({ username, password });
+    await user.save();
+
+    const payload = { user: { id: user.id } };
+    const token = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: '1h' });
+
+    res.json({ token });
+  } catch (err) {
+    console.error(err.message);
+    res.status(500).json({ message: 'Error al registrar el usuario' });
+  }
+});
+
+router.post('/login', async (req, res) => {
+  const { username, password } = req.body;
+
+  try {
+    let user = await User.findOne({ username });
+    if (!user) {
+      return res.status(400).json({ message: 'Credenciales inválidas' });
+    }
+
+    const isMatch = await user.comparePassword(password);
+    if (!isMatch) {
+      return res.status(400).json({ message: 'Credenciales inválidas' });
+    }
+
+    const payload = { user: { id: user.id } };
+    const token = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: '1h' });
+
+    res.json({ token });
+  } catch (err) {
+    console.error(err.message);
+    res.status(500).json({ message: 'Error al iniciar sesión' });
+  }
+});
+
+module.exports = router;
+
+middleware/authMiddleware.js
+
+const jwt = require('jsonwebtoken');
+const dotenv = require('dotenv');
+
+dotenv.config();
+
+const authMiddleware = (req, res, next) => {
+  const token = req.header('Authorization');
+
+  if (!token) {
+    return res.status(401).json({ message: 'Token de autenticación no válido' });
+  }
+
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    req.user = decoded.user;
+    next();
+  } catch (err) {
+    res.status(401).json({ message: 'Token de autenticación no válido' });
+  }
+};
+
+module.exports = authMiddleware;
